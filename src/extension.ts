@@ -1,141 +1,190 @@
 import * as vscode from "vscode";
+import ollama from "ollama";
+import { marked } from "marked";
+
+let markdownText = "";
+let currentWebviewView: vscode.WebviewView | null = null;
 
 export function activate(context: vscode.ExtensionContext) {
-  const chatViewProvider = createChatViewProvider(context.extensionUri);
+  context.subscriptions.push(
+    vscode.window.registerWebviewViewProvider("ddoc-chat-view", {
+      resolveWebviewView(webviewView) {
+        currentWebviewView = webviewView;
+
+        // Get path to script in extension directory
+        const mainJs = webviewView.webview.asWebviewUri(
+          vscode.Uri.joinPath(context.extensionUri, "utils", "main.js")
+        );
+        // Enable scripts in the webview
+        webviewView.webview.options = {
+          enableScripts: true,
+          // Allow loading resources from extension directory
+          localResourceRoots: [
+            vscode.Uri.joinPath(context.extensionUri, "utils")
+          ]
+        };
+        webviewView.webview.html = /*html*/ `
+            <!DOCTYPE html>
+            <html>
+            <style>
+            .think {
+              opacity: 0.5;
+              border-left: 1px solid var(--vscode-input-border);
+              padding-left: 0.6rem;
+              margin-bottom: 1rem;
+            }
+            .think::before {
+              display: block;
+              content: 'Thinking...';
+              opacity: 0.5;
+              margin-bottom: 0.5rem;
+            }
+            body {
+                margin: 0;
+                padding: 0;
+                height: 100vh;
+                display: flex;
+                flex-direction: column;
+                color: var(--vscode-foreground);
+                line-height: 1.75;
+            }
+            p {
+              margin: 0;
+              padding: 0;
+            }
+            p + * {
+              margin-top: 1rem;
+            }
+            #messages {
+                flex: 1;
+                overflow-y: auto;
+                padding: 1rem;
+                display: flex;
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+            .user-message {
+                padding: 0.5rem 0.75rem;
+                border-radius: 0.25rem;
+                align-self: flex-end;
+                background: var(--vscode-textLink-activeForeground);
+                color: var(--vscode-button-foreground);
+                max-width: 85%;
+            }
+            .extension-message {
+                max-width: 100%;
+                align-self: flex-start;
+            }
+            #input-container {
+                border-top: 1px solid var(--vscode-input-border);
+                padding: 1rem;
+                display: flex;
+                gap: 0.5rem;
+            }
+            #message-input {
+                flex: 1;
+                padding: 0.5rem;
+                border: 1px solid var(--vscode-input-border);
+                background: var(--vscode-input-background);
+                color: var(--vscode-input-foreground);
+                border-radius: 0.25rem;
+            }
+            #message-input:focus {
+                outline: 1px solid var(--vscode-focusBorder);
+                border-color: transparent;
+            }
+            #send-button {
+                padding: 0.5rem 1rem;
+                background: var(--vscode-button-background);
+                color: var(--vscode-button-foreground);
+                border: none;
+                border-radius: 0.25rem;
+                cursor: pointer;
+            }
+            #send-button:hover {
+                background: var(--vscode-button-hoverBackground);
+            }
+            pre {
+              background: var(--vscode-textPreformat-background);
+              padding: 0.5rem;
+              border-radius: 5px;
+              font-size: 0.9em;
+              white-space: pre-wrap;
+            }
+            pre code {
+              background: transparent;
+            }
+            code:not(pre code) {
+              background: var(--vscode-textPreformat-background);
+              font-size: 0.9em;
+            }
+        </style>
+            <body>
+            <div id="messages"></div>
+            <div id="input-container">
+                <textarea type="text" id="message-input" placeholder="Type here..."></textarea>
+                <button id="send-button">Send</button>
+            </div>
+            <script src="${mainJs}"></script>
+            </body>
+            </html>
+        `;
+
+        webviewView.webview.onDidReceiveMessage(async (message) => {
+          try {
+            if (message.text === "/stop") {
+              ollama.abort();
+              return;
+            }
+            const stream = await ollama.chat({
+              model: "deepseek-r1",
+              stream: true,
+              messages: [{ role: "user", content: message.text }]
+            });
+            webviewView.webview.postMessage({
+              command: "stream-start"
+            });
+            let accumulatedText = "";
+            for await (const chunk of stream) {
+              accumulatedText += chunk?.message?.content;
+              webviewView.webview.postMessage({
+                command: "stream-chunk",
+                text: chunk?.message?.content,
+                html: marked(replaceThinkWithBlockquote(accumulatedText))
+              });
+            }
+            webviewView.webview.postMessage({
+              command: "stream-end"
+            });
+            accumulatedText = "";
+          } catch (e: any) {
+            webviewView.webview.postMessage({
+              command: "reply",
+              text: "Could not process the request. " + e?.message
+            });
+          }
+        });
+      }
+    })
+  );
 
   context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("chat-view", chatViewProvider),
-    vscode.commands.registerCommand("vscode-chat.openChat", () => {
+    vscode.commands.registerCommand("deepseek-offline.openChat", () => {
       vscode.commands.executeCommand("workbench.view.extension.chat-sidebar");
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.commands.registerCommand("deepseek-offline.clearChat", () => {
+      if (currentWebviewView) {
+        currentWebviewView.webview.postMessage({ command: "clear-state" });
+      }
     })
   );
 }
 
-function createChatViewProvider(
-  extensionUri: vscode.Uri
-): vscode.WebviewViewProvider {
-  return {
-    resolveWebviewView: (
-      webviewView: vscode.WebviewView,
-      context: vscode.WebviewViewResolveContext,
-      _token: vscode.CancellationToken
-    ) => {
-      setupWebview(webviewView, extensionUri);
-      handleMessages(webviewView);
-    }
-  };
-}
-
-function setupWebview(
-  webviewView: vscode.WebviewView,
-  extensionUri: vscode.Uri
-): void {
-  webviewView.webview.options = {
-    enableScripts: true,
-    localResourceRoots: [extensionUri]
-  };
-
-  webviewView.webview.html = getWebviewHtml();
-}
-
-function handleMessages(webviewView: vscode.WebviewView): void {
-  webviewView.webview.onDidReceiveMessage((message) => {
-    switch (message.command) {
-      case "sendMessage":
-        vscode.window.showInformationMessage(
-          `Message received: ${message.text}`
-        );
-        break;
-    }
-  });
-}
-
-function getWebviewHtml(): string {
-  return `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>Chat</title>
-            <style>
-                body {
-                    padding: 10px;
-                }
-                #chat-container {
-                    display: flex;
-                    flex-direction: column;
-                    height: 100vh;
-                }
-                #messages {
-                    flex: 1;
-                    overflow-y: auto;
-                    margin-bottom: 10px;
-                    border: 1px solid var(--vscode-input-border);
-                    padding: 10px;
-                }
-                #input-container {
-                    display: flex;
-                    gap: 5px;
-                }
-                #message-input {
-                    flex: 1;
-                    padding: 5px;
-                    background: var(--vscode-input-background);
-                    border: 1px solid var(--vscode-input-border);
-                    color: var(--vscode-input-foreground);
-                }
-                button {
-                    padding: 5px 10px;
-                    background: var(--vscode-button-background);
-                    color: var(--vscode-button-foreground);
-                    border: none;
-                    cursor: pointer;
-                }
-                button:hover {
-                    background: var(--vscode-button-hoverBackground);
-                }
-            </style>
-        </head>
-        <body>
-            <div id="chat-container">
-                <div id="messages"></div>
-                <div id="input-container">
-                    <input type="text" id="message-input" placeholder="Type your message...">
-                    <button id="send-button">Send</button>
-                </div>
-            </div>
-            <script>
-                const vscode = acquireVsCodeApi();
-                const messageInput = document.getElementById('message-input');
-                const sendButton = document.getElementById('send-button');
-                const messagesContainer = document.getElementById('messages');
-
-                const sendMessage = () => {
-                    const text = messageInput.value;
-                    if (text) {
-                        vscode.postMessage({
-                            command: 'sendMessage',
-                            text: text
-                        });
-                        
-                        const messageElement = document.createElement('div');
-                        messageElement.textContent = text;
-                        messagesContainer.appendChild(messageElement);
-                        
-                        messageInput.value = '';
-                        messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                    }
-                };
-
-                sendButton.addEventListener('click', sendMessage);
-                messageInput.addEventListener('keypress', (e) => {
-                    if (e.key === 'Enter') {
-                        sendMessage();
-                    }
-                });
-            </script>
-        </body>
-        </html>
-    `;
-}
+const replaceThinkWithBlockquote = (content: string) => {
+  return content
+    .replaceAll("<think>", "<div class='think'>")
+    .replaceAll("</think>", "</div>");
+};
