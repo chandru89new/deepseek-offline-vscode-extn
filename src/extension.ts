@@ -1,6 +1,24 @@
 import * as vscode from "vscode";
 import ollama from "ollama";
 import { marked } from "marked";
+import hljs from "highlight.js";
+
+const renderer = new marked.Renderer();
+renderer.code = ({ text, lang }) => {
+  const highlighted =
+    lang && hljs.getLanguage(lang)
+      ? hljs.highlight(text, { language: lang }).value
+      : text;
+
+  return `<pre><code class="hljs language-${
+    lang || ""
+  }">${highlighted}</code></pre>`;
+};
+
+marked.setOptions({
+  renderer,
+  gfm: true
+});
 
 let markdownText = "";
 let currentWebviewView: vscode.WebviewView | null = null;
@@ -26,6 +44,7 @@ export function activate(context: vscode.ExtensionContext) {
         webviewView.webview.html = /*html*/ `
             <!DOCTYPE html>
             <html>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
             <style>
             .think {
               opacity: 0.5;
@@ -136,10 +155,15 @@ export function activate(context: vscode.ExtensionContext) {
               ollama.abort();
               return;
             }
+            const previousMessages = formatMsgForDS(message.history);
+
             const stream = await ollama.chat({
               model: "deepseek-r1",
               stream: true,
-              messages: [{ role: "user", content: message.text }]
+              messages: [
+                ...previousMessages,
+                { role: "user", content: message.text }
+              ]
             });
             webviewView.webview.postMessage({
               command: "stream-start"
@@ -187,4 +211,12 @@ const replaceThinkWithBlockquote = (content: string) => {
   return content
     .replaceAll("<think>", "<div class='think'>")
     .replaceAll("</think>", "</div>");
+};
+
+const formatMsgForDS = (
+  history: Array<{ text: string; role: string }> = []
+) => {
+  return history.map((item) => {
+    return { role: item?.role, content: item?.text };
+  });
 };
