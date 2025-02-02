@@ -12,6 +12,16 @@
   "activationEvents": [],
   "main": "./dist/extension.js",
   "contributes": {
+    "configuration": {
+      "title": "DeepSeek Offline",
+      "properties": {
+        "deepseekOffline.modelName": {
+          "type": "string",
+          "default": "deepseek-r1",
+          "description": "Model name to use for chat. You have to have this model installed on your machine (ollama run <modelName>)."
+        }
+      }
+    },
     "commands": [
       {
         "command": "deepseek-offline.openChat",

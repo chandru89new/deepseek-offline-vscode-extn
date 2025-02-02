@@ -22,6 +22,9 @@ marked.setOptions({
 
 let markdownText = "";
 let currentWebviewView: vscode.WebviewView | null = null;
+let modelName: string =
+  vscode.workspace.getConfiguration("deepseekOffline")?.get("modelName") ||
+  "deepseek-r1";
 
 export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
@@ -123,19 +126,12 @@ export function activate(context: vscode.ExtensionContext) {
             #send-button:hover {
                 background: var(--vscode-button-hoverBackground);
             }
-            pre {
-              background: var(--vscode-textPreformat-background);
-              padding: 0.5rem;
-              border-radius: 5px;
-              font-size: 0.9em;
-              white-space: pre-wrap;
-            }
             pre code {
               background: transparent;
             }
             code:not(pre code) {
               background: var(--vscode-textPreformat-background);
-              font-size: 0.9em;
+              font-size: 0.85em;
             }
         </style>
             <body>
@@ -158,7 +154,7 @@ export function activate(context: vscode.ExtensionContext) {
             const previousMessages = formatMsgForDS(message.history);
 
             const stream = await ollama.chat({
-              model: "deepseek-r1",
+              model: modelName,
               stream: true,
               messages: [
                 ...previousMessages,
@@ -184,7 +180,7 @@ export function activate(context: vscode.ExtensionContext) {
           } catch (e: any) {
             webviewView.webview.postMessage({
               command: "reply",
-              text: "Could not process the request. " + e?.message
+              text: "Could not process the request: " + e?.message
             });
           }
         });
@@ -202,6 +198,17 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand("deepseek-offline.clearChat", () => {
       if (currentWebviewView) {
         currentWebviewView.webview.postMessage({ command: "clear-state" });
+      }
+    })
+  );
+
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (event.affectsConfiguration("deepseekOffline.modelName")) {
+        modelName =
+          vscode.workspace
+            .getConfiguration("deepseekOffline")
+            ?.get("modelName") || "deepseek-r1";
       }
     })
   );
